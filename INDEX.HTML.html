@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="PPL Tracker" />
+<meta name="theme-color" content="#0a0e1a" />
+<title>PPL Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { background: #0a0e1a; color: #e2e8f0; font-family: 'DM Sans', 'Segoe UI', system-ui, sans-serif; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+  input[type=number] { -moz-appearance: textfield; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  textarea { font-family: inherit; }
+</style>
+<link rel="manifest" href="data:application/json,{
+  &quot;name&quot;:&quot;PPL Tracker&quot;,
+  &quot;short_name&quot;:&quot;PPL&quot;,
+  &quot;start_url&quot;:&quot;.&quot;,
+  &quot;display&quot;:&quot;standalone&quot;,
+  &quot;background_color&quot;:&quot;#0a0e1a&quot;,
+  &quot;theme_color&quot;:&quot;#0a0e1a&quot;
+}">
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ─── STORAGE (localStorage) ───────────────────────────────────────────────────
+const store = {
+  get: (key) => { try { return localStorage.getItem(key); } catch { return null; } },
+  set: (key, val) => { try { localStorage.setItem(key, val); } catch {} },
+};
+
+function loadDayWeek(dayIdx, weekIdx) {
+  const raw = store.get(`ppl:day${dayIdx}:week${weekIdx}`);
+  return raw ? JSON.parse(raw) : {};
+}
+function saveDayWeek(dayIdx, weekIdx, data) {
+  store.set(`ppl:day${dayIdx}:week${weekIdx}`, JSON.stringify(data));
+}
+function loadNotes(dayIdx, weekIdx) {
+  return store.get(`ppl:notes:d${dayIdx}:w${weekIdx}`) || "";
+}
+function saveNotes(dayIdx, weekIdx, text) {
+  store.set(`ppl:notes:d${dayIdx}:w${weekIdx}`, text);
+}
+function loadCurrentWeek() {
+  const v = store.get("ppl:currentWeek");
+  return v !== null ? parseInt(v) : 0;
+}
+function saveCurrentWeek(w) { store.set("ppl:currentWeek", String(w)); }
+function loadCompleted() {
+  const done = new Set();
+  for (let d = 0; d < 6; d++)
+    for (let w = 0; w < 6; w++)
+      if (store.get(`ppl:done:d${d}:w${w}`) === "1") done.add(`${d}:${w}`);
+  return done;
+}
+function markComplete(dayIdx, weekIdx) {
+  store.set(`ppl:done:d${dayIdx}:w${weekIdx}`, "1");
+}
+
+// ─── DATA ─────────────────────────────────────────────────────────────────────
+const WEEK_RIR   = ["3 RIR","2-3 RIR","2 RIR","1-2 RIR","1 RIR","0-1 RIR"];
+const WEEK_PHASE = ["Accumulation","Accumulation","Intensification","Intensification","Peak","Peak"];
+const PHASE_COLOR = { Accumulation:"#22c55e", Intensification:"#f59e0b", Peak:"#ef4444" };
+const TAG_ACCENT  = { PUSH:"#60a5fa", PULL:"#34d399", LEGS:"#f59e0b" };
+const PROG_TARGETS = {
+  weight: ["Establish","+ 2.5 lbs","+5 lbs","+5 lbs","+5 lbs","PR attempt"],
+  reps:   ["Establish","+1-2 reps","+1-2 reps","↑ weight","+1-2 reps","Max reps / PR"],
+};
+const WARMUP = [
+  { load:"40%", reps:"8",  note:"Prime the movement, build the groove" },
+  { load:"60%", reps:"5",  note:"Neural prep — check form and bar path" },
+  { load:"75%", reps:"3",  note:"Dial in weight, feel the tension" },
+  { load:"90%", reps:"1",  note:"Final primer — go heavy on working sets" },
+];
+const MESO_ROWS = [
+  [0,"3 RIR",   "Accumulation",     "Establish baseline. Leave plenty in the tank. Form focus."],
+  [1,"2-3 RIR", "Accumulation",     "Match weights with better technique. Small adds if easy."],
+  [2,"2 RIR",   "Intensification",  "+5 lbs anchors. Push closer to failure on accessories."],
+  [3,"1-2 RIR", "Intensification",  "+5 lbs anchors again. Accessories +2.5-5 lbs."],
+  [4,"1 RIR",   "Peak",             "+5 lbs. One rep from failure. Push hard."],
+  [5,"0-1 RIR", "Peak",             "PR attempts on anchors. Max effort week."],
+  [null,"N/A",  "DELOAD",           "50-60% of W6 weight. 2 sets only. Zero failure. Recover."],
+];
+const CALENDAR = [
+  {day:"MON",dayIdx:0,cardio:"4x4 #1 PM"},
+  {day:"TUE",dayIdx:1,cardio:null},
+  {day:"WED",dayIdx:2,cardio:null},
+  {day:"THU",dayIdx:3,cardio:null},
+  {day:"FRI",dayIdx:4,cardio:"4x4 #2 PM"},
+  {day:"SAT",dayIdx:5,cardio:null},
+  {day:"SUN",dayIdx:null,cardio:null},
+];
+const DAYS = [
+  {
+    dayNum:1, label:"Push Day 1", tag:"PUSH", muscles:"Chest · Shoulders · Triceps",
+    note:"Flat bench is your anchor — full range, controlled negative. Drive hard at the top.",
+    cardio:"4x4 #1 (PM)",
+    exercises:[
+      {name:"DB Flat Bench Press",         sets:4, reps:"4-6",     rest:"3-4 min",   warmup:"Full protocol",      progression:"weight", anchor:true},
+      {name:"Incline DB Press",             sets:3, reps:"8-10",    rest:"2 min",     warmup:"1 feeler set",       progression:"reps"},
+      {name:"DB Overhead Press",            sets:3, reps:"8-10",    rest:"2 min",     warmup:"1 feeler set",       progression:"reps"},
+      {name:"Cable Lateral Raise",          sets:4, reps:"12-15",   rest:"60-90 sec", warmup:"—",                  progression:"reps"},
+      {name:"Cable Tricep Pushdown",        sets:3, reps:"10-12",   rest:"60-90 sec", warmup:"—",                  progression:"reps"},
+      {name:"DB Overhead Tricep Ext.",      sets:3, reps:"10-12",   rest:"60 sec",    warmup:"—",                  progression:"reps"},
+    ]
+  },
+  {
+    dayNum:2, label:"Pull Day 1", tag:"PULL", muscles:"Back · Biceps · Rear Delts",
+    note:"Barbell row is your anchor — overhand grip, pull to your belly button. Stay tight.",
+    cardio:null,
+    exercises:[
+      {name:"Barbell Bent-Over Row",        sets:4, reps:"4-6",     rest:"3-4 min",   warmup:"Full protocol",      progression:"weight", anchor:true},
+      {name:"Cable Lat Pulldown",           sets:3, reps:"8-10",    rest:"2 min",     warmup:"1 feeler set",       progression:"reps"},
+      {name:"Seated Cable Row",             sets:3, reps:"10-12",   rest:"90 sec",    warmup:"1 feeler set",       progression:"reps"},
+      {name:"DB Rear Delt Fly",             sets:3, reps:"15",      rest:"60 sec",    warmup:"—",                  progression:"reps"},
+      {name:"DB Bicep Curl",                sets:3, reps:"8-10",    rest:"90 sec",    warmup:"—",                  progression:"weight"},
+      {name:"DB Hammer Curl",               sets:3, reps:"10-12",   rest:"60 sec",    warmup:"—",                  progression:"reps"},
+    ]
+  },
+  {
+    dayNum:3, label:"Legs Day 1", tag:"LEGS", muscles:"Quads · Hamstrings · Glutes · Calves",
+    note:"Back squat is king — full warm-up every time. Electrolytes before this session.",
+    cardio:null,
+    exercises:[
+      {name:"Barbell Back Squat",           sets:4, reps:"4-6",     rest:"3-5 min",   warmup:"Full protocol",      progression:"weight", anchor:true},
+      {name:"DB Romanian Deadlift",         sets:3, reps:"8-10",    rest:"2 min",     warmup:"1 feeler set",       progression:"weight"},
+      {name:"Leg Press",                    sets:3, reps:"10-12",   rest:"2 min",     warmup:"1 feeler set",       progression:"reps"},
+      {name:"Machine Leg Curl",             sets:3, reps:"10-12",   rest:"90 sec",    warmup:"—",                  progression:"reps"},
+      {name:"Machine Calf Raise",           sets:4, reps:"15",      rest:"60 sec",    warmup:"—",                  progression:"reps"},
+    ]
+  },
+  {
+    dayNum:4, label:"Push Day 2", tag:"PUSH", muscles:"Chest · Shoulders · Triceps (Variation)",
+    note:"Incline DB press anchors today — different angle than Day 1. Cable fly for max chest stretch.",
+    cardio:null,
+    exercises:[
+      {name:"Incline DB Press",             sets:4, reps:"4-6",     rest:"3-4 min",   warmup:"Full protocol",      progression:"weight", anchor:true},
+      {name:"Cable Chest Fly (low-to-high)",sets:3, reps:"10-12",   rest:"90 sec",    warmup:"1 feeler set",       progression:"reps"},
+      {name:"DB Arnold Press",              sets:3, reps:"10-12",   rest:"2 min",     warmup:"1 feeler set",       progression:"reps"},
+      {name:"Cable Lateral Raise",          sets:3, reps:"15",      rest:"60 sec",    warmup:"—",                  progression:"reps"},
+      {name:"Machine Dip / Tricep Press",   sets:3, reps:"8-10",    rest:"90 sec",    warmup:"—",                  progression:"weight"},
+      {name:"Cable Overhead Tricep Ext.",   sets:3, reps:"12",      rest:"60-90 sec", warmup:"—",                  progression:"reps"},
+    ]
+  },
+  {
+    dayNum:5, label:"Pull Day 2", tag:"PULL", muscles:"Back · Biceps · Rear Delts (Variation)",
+    note:"Weighted pull-ups anchor today — use a belt if bodyweight is easy.",
+    cardio:"4x4 #2 (PM)",
+    exercises:[
+      {name:"Weighted Pull-ups",            sets:4, reps:"4-6",     rest:"3-4 min",   warmup:"BW ramp: 5, 3, 1",  progression:"weight", anchor:true},
+      {name:"DB Single Arm Row",            sets:3, reps:"8-10 ea.",rest:"90 sec",    warmup:"1 feeler set",       progression:"weight"},
+      {name:"Cable Straight Arm Pulldown",  sets:3, reps:"12-15",   rest:"90 sec",    warmup:"—",                  progression:"reps"},
+      {name:"Cable Face Pull",              sets:3, reps:"15",      rest:"60 sec",    warmup:"—",                  progression:"reps"},
+      {name:"Incline DB Curl",              sets:3, reps:"10-12",   rest:"90 sec",    warmup:"—",                  progression:"reps"},
+      {name:"Cable Curl (EZ bar / rope)",   sets:3, reps:"12",      rest:"60 sec",    warmup:"—",                  progression:"reps"},
+    ]
+  },
+  {
+    dayNum:6, label:"Legs Day 2", tag:"LEGS", muscles:"Hamstrings · Glutes · Quads (Variation)",
+    note:"Barbell deadlift anchors — hinge-dominant day. Drive the floor away, keep the bar close.",
+    cardio:null,
+    exercises:[
+      {name:"Barbell Conventional Deadlift",sets:4, reps:"4-6",     rest:"3-5 min",   warmup:"Full protocol",      progression:"weight", anchor:true},
+      {name:"Hack Squat",                   sets:3, reps:"8-10",    rest:"2 min",     warmup:"1 feeler set",       progression:"reps"},
+      {name:"DB Bulgarian Split Squat",     sets:3, reps:"8-10 ea.",rest:"2 min",     warmup:"1 feeler set",       progression:"weight"},
+      {name:"Machine Leg Curl (seated)",    sets:3, reps:"12",      rest:"90 sec",    warmup:"—",                  progression:"reps"},
+      {name:"Machine Calf Raise (seated)",  sets:4, reps:"15",      rest:"60 sec",    warmup:"—",                  progression:"reps"},
+    ]
+  },
+];
+
+// ─── SMALL UI HELPERS ─────────────────────────────────────────────────────────
+const pill = (color, children) => (
+  <span style={{
+    display:"inline-flex", alignItems:"center", padding:"3px 9px",
+    borderRadius:99, background:color+"22", color, fontSize:11, fontWeight:700, letterSpacing:"0.06em"
+  }}>{children}</span>
+);
+
+// ─── WEEK BAR ─────────────────────────────────────────────────────────────────
+function WeekBar({ currentWeek, onChange }) {
+  return (
+    <div style={{display:"flex", gap:6, padding:"14px 16px 0", overflowX:"auto", WebkitOverflowScrolling:"touch"}}>
+      {[0,1,2,3,4,5].map(w => {
+        const active = w === currentWeek;
+        const pc = PHASE_COLOR[WEEK_PHASE[w]];
+        return (
+          <button key={w} onClick={()=>onChange(w)} style={{
+            flex:"0 0 auto", padding:"8px 14px", borderRadius:8, cursor:"pointer",
+            background: active ? pc+"33" : "#0f1829",
+            border:`1px solid ${active ? pc : "#1e2d47"}`,
+            color: active ? pc : "#64748b",
+            fontWeight:700, fontSize:13, transition:"all 0.15s",
+          }}>
+            <div>W{w+1}</div>
+            <div style={{fontSize:9, opacity:0.8, marginTop:2}}>{WEEK_RIR[w]}</div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── CALENDAR STRIP ───────────────────────────────────────────────────────────
+function CalendarStrip({ currentWeek, onSelectDay, completedDays }) {
+  return (
+    <div style={{display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:4, padding:"14px 16px"}}>
+      {CALENDAR.map(({day, dayIdx}, i) => {
+        const isRest = dayIdx === null;
+        const done = !isRest && completedDays.has(`${dayIdx}:${currentWeek}`);
+        const accent = !isRest ? TAG_ACCENT[DAYS[dayIdx].tag] : "#334155";
+        return (
+          <button key={day} onClick={()=>!isRest && onSelectDay(dayIdx)} style={{
+            background: done ? accent+"22" : "#0f1829",
+            border:`1px solid ${done ? accent : "#1e2d47"}`,
+            borderRadius:8, padding:"8px 4px", cursor: isRest ? "default" : "pointer",
+            display:"flex", flexDirection:"column", alignItems:"center", gap:4, transition:"all 0.15s",
+          }}>
+            <span style={{fontSize:10, fontWeight:700, letterSpacing:"0.06em", color: isRest ? "#2a3550" : "#94a3b8"}}>{day}</span>
+            {!isRest
+              ? <><span style={{fontSize:9, color:accent, fontWeight:700}}>{DAYS[dayIdx].tag}</span>
+                  {done && <span style={{fontSize:12}}>✓</span>}</>
+              : <span style={{fontSize:9, color:"#2a3550"}}>REST</span>
+            }
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── MESO OVERVIEW ────────────────────────────────────────────────────────────
+function MesoOverview() {
+  return (
+    <div style={{margin:"0 16px", background:"#0f1829", border:"1px solid #1e2d47", borderRadius:12, overflow:"hidden"}}>
+      <div style={{padding:"12px 16px", borderBottom:"1px solid #1e2d47"}}>
+        <span style={{fontSize:11, fontWeight:700, letterSpacing:"0.12em", color:"#60a5fa"}}>6-WEEK MESO OVERVIEW</span>
+      </div>
+      {MESO_ROWS.map(([w, rir, phase, note], i) => {
+        const isDeload = w === null;
+        const pc = !isDeload ? PHASE_COLOR[phase] : "#60a5fa";
+        return (
+          <div key={i} style={{
+            padding:"10px 16px", borderBottom: i < MESO_ROWS.length-1 ? "1px solid #111827" : "none",
+            display:"flex", alignItems:"flex-start", gap:12,
+            background: isDeload ? "#0d1829" : "transparent",
+          }}>
+            <div style={{textAlign:"center", minWidth:32, paddingTop:2}}>
+              <div style={{fontSize:14, fontWeight:800, color:pc}}>{isDeload ? "D" : `W${w+1}`}</div>
+              <div style={{fontSize:9, color:"#4a6080", marginTop:2}}>{rir}</div>
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:10, color:pc, fontWeight:700, marginBottom:3}}>{phase.toUpperCase()}</div>
+              <div style={{fontSize:12, color:"#94a3b8", lineHeight:1.5}}>{note}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── WARMUP CARD ──────────────────────────────────────────────────────────────
+function WarmupCard() {
+  return (
+    <div style={{margin:"0 16px", background:"#0f1829", border:"1px solid #1e2d47", borderRadius:12, overflow:"hidden"}}>
+      <div style={{padding:"12px 16px", borderBottom:"1px solid #1e2d47"}}>
+        <span style={{fontSize:11, fontWeight:700, letterSpacing:"0.12em", color:"#60a5fa"}}>⚡ ANCHOR LIFT WARM-UP</span>
+      </div>
+      {WARMUP.map(({load, reps, note}, i) => (
+        <div key={i} style={{
+          padding:"12px 16px", display:"flex", alignItems:"center", gap:14,
+          borderBottom: i < 3 ? "1px solid #111827" : "none",
+        }}>
+          <div style={{width:38, textAlign:"center", fontSize:16, fontWeight:800, color:"#60a5fa"}}>{load}</div>
+          <div style={{width:28, textAlign:"center", fontSize:14, fontWeight:700, color:"#e2e8f0"}}>{reps}</div>
+          <div style={{fontSize:12, color:"#64748b"}}>{note}</div>
+        </div>
+      ))}
+      <div style={{padding:"10px 16px", borderTop:"1px solid #1e2d47", background:"#0d1220"}}>
+        <span style={{fontSize:11, color:"#4a6080"}}>All other exercises: 1 light feeler set only</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── COMPLETE EXERCISE DIALOG ─────────────────────────────────────────────────
+function CompleteDialog({ exerciseName, onYes, onNo }) {
+  return (
+    <div style={{
+      position:"fixed", inset:0, zIndex:200,
+      background:"rgba(0,0,0,0.75)", backdropFilter:"blur(4px)",
+      display:"flex", alignItems:"center", justifyContent:"center", padding:24,
+    }}>
+      <div style={{
+        background:"#0f1829", border:"1px solid #1e3a5f", borderRadius:16,
+        padding:"28px 24px", maxWidth:340, width:"100%",
+        boxShadow:"0 24px 60px rgba(0,0,0,0.6)",
+        animation:"dialogIn 0.18s ease-out",
+      }}>
+        <div style={{textAlign:"center", marginBottom:20}}>
+          <div style={{fontSize:32, marginBottom:12}}>✅</div>
+          <div style={{fontSize:13, fontWeight:700, letterSpacing:"0.15em", color:"#60a5fa", marginBottom:8}}>EXERCISE COMPLETE?</div>
+          <div style={{fontSize:16, fontWeight:800, color:"#e2e8f0", lineHeight:1.4}}>{exerciseName}</div>
+          <div style={{fontSize:13, color:"#64748b", marginTop:8}}>All sets are logged. Mark this exercise complete?</div>
+        </div>
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
+          <button onClick={onNo} style={{
+            padding:"14px", borderRadius:10, cursor:"pointer",
+            background:"transparent", border:"1px solid #1e2d47",
+            color:"#64748b", fontSize:15, fontWeight:700,
+          }}>NO</button>
+          <button onClick={onYes} style={{
+            padding:"14px", borderRadius:10, cursor:"pointer",
+            background:"#1e3a5f", border:"1px solid #3b82f6",
+            color:"#60a5fa", fontSize:15, fontWeight:800,
+          }}>YES</button>
+        </div>
+      </div>
+      <style>{`@keyframes dialogIn { from { opacity:0; transform:scale(0.92) translateY(12px); } to { opacity:1; transform:scale(1) translateY(0); } }`}</style>
+    </div>
+  );
+}
+
+// ─── EXERCISE CARD ────────────────────────────────────────────────────────────
+function ExerciseCard({ exercise, exIdx, weekIdx, weekData, onUpdateSet, onWeightAutoFill, onLastSetRepsEntered, expanded, onToggle, done }) {
+  const goal = PROG_TARGETS[exercise.progression][weekIdx];
+  const goalColor = weekIdx < 2 ? "#64748b" : weekIdx < 4 ? "#22c55e" : weekIdx < 5 ? "#f59e0b" : "#ef4444";
+
+  const handleWeightBlur = (s, value) => {
+    // Auto-fill weight for remaining sets when set 0 is filled
+    if (s === 0 && value.trim() !== "") {
+      onWeightAutoFill(exIdx, value, exercise.sets);
+    }
+  };
+
+  const handleRepsChange = (s, value) => {
+    onUpdateSet(exIdx, s, "reps", value);
+    // Trigger dialog when last set reps is filled in
+    if (s === exercise.sets - 1 && value.trim() !== "") {
+      onLastSetRepsEntered(exIdx, exercise.name);
+    }
+  };
+
+  return (
+    <div style={{borderBottom:"1px solid #111827", opacity: done ? 0.55 : 1, transition:"opacity 0.2s"}}>
+      <button onClick={onToggle} style={{
+        width:"100%", textAlign:"left", padding:"14px 16px",
+        background:"transparent", border:"none", cursor:"pointer",
+        display:"flex", alignItems:"flex-start", gap:10,
+      }}>
+        {exercise.anchor && <span style={{fontSize:16, marginTop:1, flexShrink:0}}>⭐</span>}
+        <div style={{flex:1, minWidth:0}}>
+          <div style={{display:"flex", alignItems:"center", gap:8}}>
+            <div style={{fontSize:14, fontWeight:700, color: done ? "#4a6080" : "#e2e8f0", lineHeight:1.3}}>{exercise.name}</div>
+            {done && <span style={{fontSize:12, color:"#22c55e"}}>✓</span>}
+          </div>
+          <div style={{marginTop:5, display:"flex", flexWrap:"wrap", gap:5}}>
+            {pill("#60a5fa", `${exercise.sets} × ${exercise.reps}`)}
+            {pill("#475569", `⏱ ${exercise.rest}`)}
+            {pill(goalColor, `↑ ${goal}`)}
+          </div>
+        </div>
+        <span style={{
+          color:"#334155", fontSize:20, flexShrink:0,
+          transform: expanded ? "rotate(90deg)" : "none", transition:"transform 0.2s",
+          marginTop:2,
+        }}>›</span>
+      </button>
+
+      {expanded && (
+        <div style={{background:"#080c18", borderTop:"1px solid #1e2d47"}}>
+          <div style={{display:"grid", gridTemplateColumns:"36px 1fr 1fr", gap:8, padding:"8px 16px 6px", borderBottom:"1px solid #111827"}}>
+            <span style={{fontSize:10, color:"#334155", fontWeight:700, textAlign:"center"}}>SET</span>
+            <span style={{fontSize:10, color:"#334155", fontWeight:700, textAlign:"center"}}>WEIGHT</span>
+            <span style={{fontSize:10, color:"#334155", fontWeight:700, textAlign:"center"}}>REPS</span>
+          </div>
+          {Array.from({length:exercise.sets}, (_,s) => {
+            const setData = (weekData[exIdx] || {})[s] || {weight:"", reps:""};
+            return (
+              <div key={s} style={{display:"grid", gridTemplateColumns:"36px 1fr 1fr", gap:8, padding:"6px 16px", borderBottom:"1px solid #0d1220", alignItems:"center"}}>
+                <span style={{fontSize:15, fontWeight:800, color:"#334a6b", textAlign:"center"}}>{s+1}</span>
+                <input type="number" inputMode="decimal" placeholder="lbs"
+                  value={setData.weight}
+                  onChange={e=>onUpdateSet(exIdx, s, "weight", e.target.value)}
+                  onBlur={e=>handleWeightBlur(s, e.target.value)}
+                  style={{
+                    background:"#0f1829", border:"1px solid #1e2d47", borderRadius:8,
+                    color:"#60a5fa", fontSize:17, fontWeight:700, padding:"11px 8px",
+                    textAlign:"center", width:"100%", outline:"none",
+                  }}
+                />
+                <input type="number" inputMode="numeric" placeholder="reps"
+                  value={setData.reps}
+                  onChange={e=>handleRepsChange(s, e.target.value)}
+                  style={{
+                    background:"#0f1829", border:"1px solid #1e2d47", borderRadius:8,
+                    color:"#34d399", fontSize:17, fontWeight:700, padding:"11px 8px",
+                    textAlign:"center", width:"100%", outline:"none",
+                  }}
+                />
+              </div>
+            );
+          })}
+          <div style={{padding:"8px 16px", display:"flex", gap:6, alignItems:"center"}}>
+            <span style={{fontSize:10, color:"#4a6080", fontWeight:700}}>WARM-UP:</span>
+            <span style={{fontSize:10, color:"#334a6b"}}>{exercise.warmup}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── DAY VIEW ─────────────────────────────────────────────────────────────────
+function DayView({ dayIdx, weekIdx, onBack, onComplete, completedDays }) {
+  const day = DAYS[dayIdx];
+  const accent = TAG_ACCENT[day.tag];
+  const pc = PHASE_COLOR[WEEK_PHASE[weekIdx]];
+  const isDone = completedDays.has(`${dayIdx}:${weekIdx}`);
+
+  const [weekData, setWeekData]       = useState(() => loadDayWeek(dayIdx, weekIdx));
+  const [notes, setNotes]             = useState(() => loadNotes(dayIdx, weekIdx));
+  const [expandedIdx, setExpandedIdx] = useState(0); // first exercise open by default
+  const [doneExercises, setDoneExercises] = useState(new Set());
+  const [dialog, setDialog]           = useState(null); // { exIdx, exName }
+
+  const handleUpdateSet = useCallback((exIdx, setIdx, field, value) => {
+    setWeekData(prev => {
+      const next = {
+        ...prev,
+        [exIdx]: {
+          ...(prev[exIdx] || {}),
+          [setIdx]: {...((prev[exIdx] || {})[setIdx] || {}), [field]: value}
+        }
+      };
+      saveDayWeek(dayIdx, weekIdx, next);
+      return next;
+    });
+  }, [dayIdx, weekIdx]);
+
+  // Auto-fill weight from set 0 to all empty sets for this exercise
+  const handleWeightAutoFill = useCallback((exIdx, weight, numSets) => {
+    setWeekData(prev => {
+      const exData = prev[exIdx] || {};
+      const next = { ...prev, [exIdx]: { ...exData } };
+      for (let s = 1; s < numSets; s++) {
+        const existing = (exData[s] || {}).weight;
+        if (!existing || existing === "") {
+          next[exIdx][s] = { ...(exData[s] || {}), weight };
+        }
+      }
+      saveDayWeek(dayIdx, weekIdx, next);
+      return next;
+    });
+  }, [dayIdx, weekIdx]);
+
+  // Last set reps entered — show dialog
+  const handleLastSetRepsEntered = useCallback((exIdx, exName) => {
+    setDialog({ exIdx, exName });
+  }, []);
+
+  const handleDialogYes = () => {
+    const { exIdx } = dialog;
+    setDialog(null);
+    setDoneExercises(prev => new Set([...prev, exIdx]));
+    // Open next exercise if exists
+    const nextIdx = exIdx + 1;
+    if (nextIdx < day.exercises.length) {
+      setExpandedIdx(nextIdx);
+      // Scroll to top of exercises section after short delay
+      setTimeout(() => {
+        const el = document.getElementById(`ex-${nextIdx}`);
+        if (el) el.scrollIntoView({ behavior:"smooth", block:"start" });
+      }, 100);
+    } else {
+      setExpandedIdx(null); // all done
+    }
+  };
+
+  const handleDialogNo = () => setDialog(null);
+
+  const handleNoteChange = (val) => {
+    setNotes(val);
+    saveNotes(dayIdx, weekIdx, val);
+  };
+
+  const handleComplete = () => {
+    markComplete(dayIdx, weekIdx);
+    onComplete(dayIdx, weekIdx);
+  };
+
+  return (
+    <div style={{paddingBottom:100}}>
+      {dialog && (
+        <CompleteDialog
+          exerciseName={dialog.exName}
+          onYes={handleDialogYes}
+          onNo={handleDialogNo}
+        />
+      )}
+
+      {/* Day header */}
+      <div style={{background:"#0d1220", borderBottom:"1px solid #1e2d47", padding:"14px 16px"}}>
+        <button onClick={onBack} style={{background:"none", border:"none", color:"#60a5fa", fontSize:14, cursor:"pointer", padding:"0 0 10px", display:"flex", alignItems:"center", gap:6}}>
+          ‹ Back
+        </button>
+        <div style={{display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8}}>
+          <div style={{flex:1}}>
+            <div style={{display:"flex", alignItems:"center", flexWrap:"wrap", gap:6, marginBottom:6}}>
+              {pill(accent, day.tag)}
+              {pill(pc, `W${weekIdx+1} · ${WEEK_RIR[weekIdx]}`)}
+              {isDone && pill("#22c55e", "✓ Done")}
+            </div>
+            <div style={{fontSize:19, fontWeight:800, color:"#e2e8f0"}}>{day.label}</div>
+            <div style={{fontSize:12, color:"#4a6080", marginTop:2}}>{day.muscles}</div>
+          </div>
+        </div>
+        {day.cardio && (
+          <div style={{marginTop:10, padding:"8px 12px", background:"#1e2d47", borderRadius:8, display:"flex", alignItems:"center", gap:8}}>
+            <span>🏃</span>
+            <span style={{fontSize:12, color:"#60a5fa", fontWeight:700}}>{day.cardio} · Norwegian 4x4 — PM session</span>
+          </div>
+        )}
+        <div style={{marginTop:10, padding:"8px 12px", background:"#0a0e1a", borderRadius:8, borderLeft:`3px solid ${accent}`}}>
+          <span style={{fontSize:12, color:"#64748b", lineHeight:1.5}}>{day.note}</span>
+        </div>
+      </div>
+
+      {/* Exercises */}
+      <div style={{margin:"16px 16px 0", background:"#0f1829", border:"1px solid #1e2d47", borderRadius:12, overflow:"hidden"}}>
+        <div style={{padding:"10px 16px", borderBottom:"1px solid #1e2d47", background:"#080c18", display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+          <span style={{fontSize:11, fontWeight:700, letterSpacing:"0.12em", color:"#60a5fa"}}>EXERCISES</span>
+          <span style={{fontSize:11, color:"#334155"}}>{doneExercises.size}/{day.exercises.length} done</span>
+        </div>
+        {day.exercises.map((ex, i) => (
+          <div key={i} id={`ex-${i}`}>
+            <ExerciseCard
+              exercise={ex}
+              exIdx={i}
+              weekIdx={weekIdx}
+              weekData={weekData}
+              onUpdateSet={handleUpdateSet}
+              onWeightAutoFill={handleWeightAutoFill}
+              onLastSetRepsEntered={handleLastSetRepsEntered}
+              expanded={expandedIdx === i}
+              onToggle={() => setExpandedIdx(expandedIdx === i ? null : i)}
+              done={doneExercises.has(i)}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Notes */}
+      <div style={{margin:"16px 16px 0"}}>
+        <div style={{fontSize:11, fontWeight:700, letterSpacing:"0.12em", color:"#4a6080", marginBottom:8}}>SESSION NOTES</div>
+        <textarea
+          value={notes}
+          onChange={e=>handleNoteChange(e.target.value)}
+          placeholder="How'd it feel? Any PRs? Notes for next session..."
+          style={{
+            width:"100%", minHeight:90,
+            background:"#0f1829", border:"1px solid #1e2d47", borderRadius:10,
+            color:"#94a3b8", fontSize:13, padding:"12px 14px", resize:"vertical",
+            outline:"none", lineHeight:1.5,
+          }}
+        />
+      </div>
+
+      {/* Complete button */}
+      <div style={{margin:"16px 16px 0"}}>
+        <button onClick={handleComplete} style={{
+          width:"100%", padding:"16px", borderRadius:12,
+          background: isDone ? "#052e16" : accent,
+          border:`1px solid ${isDone ? "#166534" : accent}`,
+          color: isDone ? "#22c55e" : "#fff",
+          fontSize:15, fontWeight:800, cursor:"pointer", letterSpacing:"0.05em",
+        }}>
+          {isDone ? "✓ Session Complete" : "Mark Session Complete"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── HOME VIEW ────────────────────────────────────────────────────────────────
+function HomeView({ currentWeek, setCurrentWeek, onSelectDay, completedDays }) {
+  const [tab, setTab] = useState("schedule");
+  return (
+    <div style={{paddingBottom:100}}>
+      <WeekBar currentWeek={currentWeek} onChange={w=>{setCurrentWeek(w); saveCurrentWeek(w);}} />
+      <CalendarStrip currentWeek={currentWeek} onSelectDay={onSelectDay} completedDays={completedDays} />
+
+      {/* Tabs */}
+      <div style={{display:"flex", gap:2, padding:"0 16px 16px"}}>
+        {[["schedule","Schedule"],["overview","Meso"],["warmup","Warm-up"]].map(([key,label])=>(
+          <button key={key} onClick={()=>setTab(key)} style={{
+            flex:1, padding:"8px 4px", borderRadius:8, cursor:"pointer",
+            background: tab===key ? "#1e2d47" : "transparent",
+            border:`1px solid ${tab===key ? "#334a6b" : "#111827"}`,
+            color: tab===key ? "#60a5fa" : "#4a6080",
+            fontSize:12, fontWeight:700,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {tab==="schedule" && (
+        <div style={{padding:"0 16px"}}>
+          {DAYS.map((day,i)=>{
+            const done = completedDays.has(`${i}:${currentWeek}`);
+            const accent = TAG_ACCENT[day.tag];
+            return (
+              <button key={i} onClick={()=>onSelectDay(i)} style={{
+                width:"100%", textAlign:"left", marginBottom:10,
+                background: done ? accent+"11" : "#0f1829",
+                border:`1px solid ${done ? accent+"44" : "#1e2d47"}`,
+                borderRadius:12, padding:"14px 16px", cursor:"pointer",
+                display:"flex", alignItems:"center", gap:14, transition:"all 0.15s",
+              }}>
+                <div style={{width:42, height:42, borderRadius:10, background:accent+"22", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0}}>
+                  <span style={{fontSize:11, fontWeight:800, color:accent}}>{day.tag}</span>
+                </div>
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{fontSize:14, fontWeight:700, color:"#e2e8f0"}}>Day {day.dayNum} — {day.label}</div>
+                  <div style={{fontSize:11, color:"#4a6080", marginTop:2}}>{day.muscles}</div>
+                  {day.cardio && <div style={{fontSize:11, color:"#60a5fa", marginTop:2}}>+ {day.cardio}</div>}
+                </div>
+                {done && <span style={{fontSize:18, color:"#22c55e", flexShrink:0}}>✓</span>}
+                <span style={{color:"#334155", fontSize:20, flexShrink:0}}>›</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {tab==="overview" && <MesoOverview />}
+      {tab==="warmup"   && <WarmupCard />}
+    </div>
+  );
+}
+
+// ─── APP ROOT ─────────────────────────────────────────────────────────────────
+function App() {
+  const [view, setView]           = useState("home");
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [currentWeek, setCurrentWeek] = useState(loadCurrentWeek);
+  const [completedDays, setCompletedDays] = useState(loadCompleted);
+
+  const handleComplete = (dayIdx, weekIdx) => {
+    markComplete(dayIdx, weekIdx);
+    setCompletedDays(prev => new Set([...prev, `${dayIdx}:${weekIdx}`]));
+  };
+
+  const phase = WEEK_PHASE[currentWeek];
+  const pc    = PHASE_COLOR[phase];
+
+  return (
+    <div style={{minHeight:"100vh", background:"#0a0e1a", color:"#e2e8f0", fontFamily:"'DM Sans','Segoe UI',system-ui,sans-serif", maxWidth:480, margin:"0 auto"}}>
+      {/* Header */}
+      <div style={{background:"#0d1220", borderBottom:"1px solid #1e2d47", padding:"16px 20px 12px", position:"sticky", top:0, zIndex:50}}>
+        <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:13, fontWeight:700, letterSpacing:"0.15em", color:"#60a5fa"}}>PPL TRAINING</div>
+            <div style={{fontSize:11, color:"#4a6080", letterSpacing:"0.08em", marginTop:2}}>6-Week Mesocycle · Keto-Optimized</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:13, fontWeight:800, color:pc}}>Week {currentWeek+1}</div>
+            <div style={{fontSize:10, color:"#4a6080"}}>{phase} · {WEEK_RIR[currentWeek]}</div>
+          </div>
+        </div>
+      </div>
+
+      {view==="home" && (
+        <HomeView
+          currentWeek={currentWeek}
+          setCurrentWeek={setCurrentWeek}
+          onSelectDay={i=>{setSelectedDay(i); setView("day");}}
+          completedDays={completedDays}
+        />
+      )}
+      {view==="day" && selectedDay!==null && (
+        <DayView
+          dayIdx={selectedDay}
+          weekIdx={currentWeek}
+          onBack={()=>setView("home")}
+          onComplete={handleComplete}
+          completedDays={completedDays}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
